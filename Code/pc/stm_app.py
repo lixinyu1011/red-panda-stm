@@ -69,20 +69,14 @@ class PlotFrame(ttk.Frame):
         ax.relim()
         ax.autoscale_view()
         # We need to draw *and* flush
-        self.canvas.draw()
-        self.canvas.flush_events()
+        self.canvas.draw_idle()
 
     def update_image(self, image_data, extend=None):
         self.image.set_data(image_data)
         self.image.autoscale()
         if extend:
             self.image.set_extent(extend)
-        # ax = self.figure.get_axes()[0]
-        # ax.relim()
-        # ax.autoscale_view()
-        # We need to draw *and* flush
-        self.canvas.draw()
-        self.canvas.flush_events()
+        self.canvas.draw_idle()
 
     def save_figure(self, image_path):
         self.figure.savefig(image_path)
@@ -254,7 +248,7 @@ class App(tk.Tk):
                 button.grid(row=2, column=0, sticky=tk.W)
 
         open_frame = _ButtonWithEntry(button_frame,  "Open", [
-            "COM7"],  self.stm.open)
+            "/dev/cu.usbmodem164952701"],  self.stm.open)
         open_frame.grid(row=row_number, column=0, pady=5, sticky=tk.W)
         row_number += 1
 
@@ -405,8 +399,11 @@ class App(tk.Tk):
         self.status_label.grid(row=0, column=0)
 
         self._update_real_time()
-        # Default put the windows to be largest.
-        self.state('zoomed')
+        if self.tk.call("tk", "windowingsystem") == "win32":
+            self.state("zoomed")
+        else:
+            self.update_idletasks()
+            self.geometry(f"{self.winfo_screenwidth()}x{self.winfo_screenheight()}+0+0")
 
     def _quit(self):
         self.quit()     # stops mainloop
@@ -453,5 +450,7 @@ class App(tk.Tk):
 # If you put root.destroy() here, it will cause an error if the window is
 # closed with the window manager.
 if __name__ == "__main__":
+    print("starting Panda STM...")
     app = App()
+    print("window ready")
     app.mainloop()

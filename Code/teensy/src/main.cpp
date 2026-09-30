@@ -124,11 +124,10 @@ void serialCommand(String command, STM &stm)
 void checkSerial(STM &stm)
 {
   String serialString;
-  if (Serial.available() > 0)
+  if (Serial.available() >= CMD_LENGTH)
   {
-    for (int i = 0; i < CMD_LENGTH; i++) // Read command with length CMD_LENGTH
+    for (int i = 0; i < CMD_LENGTH; i++)
     {
-      // delay(1);
       char inChar = Serial.read();
       serialString += inChar;
     }

@@ -82,34 +82,47 @@ class STM(object):
         self.scan_config = [0, 100, 10, 0, 100, 10]
         self.scan_adc = np.ones([512, 512], dtype=np.float32)
         self.scan_dacz = np.ones([512, 512], dtype=np.float32)
+        self.last_raw_status = ""
+
+    def close(self):
+        self.is_opened = False
+        self.busy = False
+        ser = getattr(self, "stm_serial", None)
+        if ser is not None and getattr(ser, "is_open", False):
+            ser.close()
+            time.sleep(0.3)
 
     def open(self, device):
-        self.stm_serial = serial.Serial(device, 115200, timeout=1)
-        self.stm_serial.set_buffer_size(rx_size=128000, tx_size=128000)
+        self.close()
+        self.stm_serial = serial.Serial(
+            device, 115200, timeout=2, write_timeout=2)
+        if hasattr(self.stm_serial, "set_buffer_size"):
+            self.stm_serial.set_buffer_size(rx_size=128000, tx_size=128000)
+        time.sleep(1.5)
         self.is_opened = True
 
-    def get_status(self):
+    def reopen(self):
+        device = self.stm_serial.port
+        self.close()
+        time.sleep(0.3)
+        self.open(device)
+
+    def get_status(self, timeout=None):
         if self.busy:
-            return
-        if self.is_opened:
-            if self.busy:
-                print('busy')
-                return self.history[-1]
-            try:
-                self.send_cmd('GSTS')
-                status_str = self.stm_serial.readline().decode()
-                status_value = status_str.split(',')
-                status_value = [int(x) for x in status_value]
-                self.status = STM_Status.from_list(status_value)
-            except:
-                print('no response')
-                return self.history[-1]
-        else:
-            self.status = STM_Status()
+            return self.history[-1] if self.history else None
+        if not self.is_opened:
+            return None
+        if timeout is not None:
+            self.stm_serial.timeout = timeout
+        self.send_cmd('GSTS')
+        self.last_raw_status = self.stm_serial.readline().decode(errors="replace").strip()
+        status_value = [x for x in self.last_raw_status.split(',') if x]
+        if len(status_value) < 10:
+            return None
+        self.status = STM_Status.from_list([int(x) for x in status_value])
         self.history.append(self.status)
         if len(self.history) > self.hist_length:
             self.history.popleft()
-
         return self.status
 
     def reset(self):
@@ -122,9 +135,10 @@ class STM(object):
     def send_cmd(self, cmd):
         if self.is_opened:
             self.stm_serial.write(cmd.encode())
+            self.stm_serial.flush()
 
     def move_motor(self, steps):
-        self.send_cmd('MTMV {steps}')
+        self.send_cmd(f'MTMV {steps} ')
 
     def approach(self, target_dac, steps):
         self.send_cmd(f'APRH {target_dac} {steps}')

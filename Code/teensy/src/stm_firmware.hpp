@@ -102,7 +102,18 @@ class STM
 public: // Access specifier
     void move_motor(int steps)
     {
-        stepper_motor.step(steps);
+        int dir = (steps >= 0) ? 1 : -1;
+        int remain = (steps >= 0) ? steps : -steps;
+        while (remain > 0)
+        {
+            int n = (remain > 8) ? 8 : remain;
+            stepper_motor.step(dir * n);
+            remain -= n;
+            while (Serial.available() > 0)
+            {
+                Serial.read();
+            }
+        }
         stm_status.steps = stepper_motor.get_total_steps();
         stm_status.time_millis = millis();
     }
