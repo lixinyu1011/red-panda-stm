@@ -416,18 +416,19 @@ class App(tk.Tk):
     def _update_real_time(self):
         if not self.stm.busy:
             status = self.stm.get_status()
-            plot_x = [hist.time_millis for hist in self.stm.history]
-            self.status_label.config(text=status.to_string())
-            max_time = max(plot_x)
-            plot_x = [(x - max_time) / self.baseline_size *
-                      2.0 for x in plot_x]
-            plot_adc = [stm_control.STM_Status.adc_to_amp(
-                hist.adc) for hist in self.stm.history]
-            plot_steps = [hist.steps for hist in self.stm.history]
-
-            self.real_time_current_plot_frame.update_plot(plot_x, plot_adc)
-            self.real_time_steps_plot_frame.update_plot(plot_x, plot_steps)
-        self.after(100, self._update_real_time)
+            if status is not None:
+                plot_x = [hist.time_millis for hist in self.stm.history]
+                self.status_label.config(text=status.to_string())
+                if plot_x:
+                    max_time = max(plot_x)
+                    plot_x = [(x - max_time) / self.baseline_size *
+                              2.0 for x in plot_x]
+                    plot_adc = [stm_control.STM_Status.adc_to_amp(
+                        hist.adc) for hist in self.stm.history]
+                    plot_steps = [hist.steps for hist in self.stm.history]
+                    self.real_time_current_plot_frame.update_plot(plot_x, plot_adc)
+                    self.real_time_steps_plot_frame.update_plot(plot_x, plot_steps)
+        self.after(200, self._update_real_time)
 
     def _update_images(self):
         x_start, x_end, x_resolution, y_start, y_end, y_resolution = self.stm.scan_config

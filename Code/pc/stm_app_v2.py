@@ -362,6 +362,7 @@ class App(tk.Tk):
         self._was_busy = False
         self._trace = []
         self._status_live = False
+        self._iv_live = False
 
         plot_px = max(MIN_PLOT_PX,
                       min(MAX_PLOT_PX, (self.winfo_screenheight() - 200) // 2))
@@ -488,9 +489,13 @@ class App(tk.Tk):
         iv.grid(row=row, column=0, sticky=tk.EW, pady=4)
         row += 1
 
-        EntryRow(iv, "Plot IV", ["31768", "33768", "10"], self._plot_iv_curve,
-                 labels=["start", "end", "step"]).grid(
-            row=0, column=0, sticky=tk.W, pady=2)
+        self.iv_row = EntryRow(iv, "Plot IV", ["31768", "33768", "10"],
+                               self._plot_iv_curve,
+                               labels=["start", "end", "step"])
+        self.iv_row.grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.iv_live_btn = ttk.Button(iv, text="Live IV", width=14,
+                                     command=self._toggle_iv_live)
+        self.iv_live_btn.grid(row=0, column=1, padx=(8, 0), sticky=tk.W)
         EntryRow(iv, "Save IV", [f"{DATA_DIR}/iv_curve"], self._save_iv_curve,
                  labels=["prefix"], entry_width=24).grid(
             row=1, column=0, sticky=tk.W, pady=2)
@@ -574,12 +579,14 @@ class App(tk.Tk):
 
         self.current_plot = make('plot', 0, 0, label="current",
                                  xlabel="time (s)", ylabel="current (nA)")
+        self.adc_plot = make('plot', 0, 1, label="ADC",
+                             xlabel="time (s)", ylabel="ADC")
+        self.iv_plot = make('plot', 0, 2, label="IV curve",
+                            xlabel="bias (V)", ylabel="current (nA)")
         self.steps_plot = make('plot', 1, 0, label="steps",
                                xlabel="time (s)", ylabel="steps")
-        self.iv_plot = make('plot', 0, 1, label="IV curve",
-                            xlabel="bias (V)", ylabel="current (nA)")
         self.z_image = make('image', 1, 1, title="Scan DAC Z")
-        self.adc_image = make('image', 0, 2, title="Scan ADC")
+        self.adc_image = make('image', 1, 2, title="Scan ADC")
 
         for col in range(3):
             frame.columnconfigure(col, weight=1)
@@ -804,33 +811,75 @@ class App(tk.Tk):
 
     # -------------------------------------------------------------- IV curve
 
-    def _plot_iv_curve(self, start, end, step):
+    def _toggle_iv_live(self):
+        if self._iv_live:
+            self._iv_live = False
+            self.iv_live_btn.configure(text="Live IV")
+            self._status_live = True
+            self.log("live IV stopped")
+            return
         if not self._require_connection():
             return
-        try:
-            start, end, step = self._parse_ints([start, end, step])
-        except ValueError:
-            self.log("IV: start/end/step must be integers")
+        self._iv_live = True
+        self.iv_live_btn.configure(text="Stop Live IV")
+        self.log("live IV started")
+        self._run_iv_once()
+
+    def _run_iv_once(self):
+        if not self._iv_live or not self.stm.is_opened:
             return
+        start, end, step = self._parse_ints(self.iv_row.values())
+        self._status_live = False
+        self.stm.busy = True
         started = self.tasks.submit(
             "iv", self.stm.measure_iv_curve, start, end, step,
             on_done=self._on_iv_done,
-            on_error=lambda exc: self.log(f"IV sweep failed: {exc}"))
+            on_error=self._on_iv_error)
+        if not started:
+            self.after(500, self._run_iv_once)
+
+    def _plot_iv_curve(self, start, end, step):
+        if not self._require_connection():
+            return
+        start, end, step = self._parse_ints([start, end, step])
+        self._status_live = False
+        self.stm.busy = True
+        started = self.tasks.submit(
+            "iv", self.stm.measure_iv_curve, start, end, step,
+            on_done=self._on_iv_done,
+            on_error=self._on_iv_error)
         if started:
             self.log(f"IV sweep {start} -> {end} step {step} ...")
         else:
             self.log("IV sweep already running")
 
+    def _on_iv_error(self, exc):
+        self.stm.busy = False
+        self._status_live = not self._iv_live
+        self.log(f"IV sweep failed: {exc}")
+        if self._iv_live:
+            self.after(800, self._run_iv_once)
+
     def _on_iv_done(self, values):
+        self.stm.busy = False
         if not values or len(values) < 2:
             self.log("IV sweep returned no data")
-            return
-        dac_values = values[::2]
-        adc_values = values[1::2]
-        bias = [stm_control.STM_Status.dac_to_bias_volts(d) for d in dac_values]
-        current = [stm_control.STM_Status.adc_to_amp(a) * 1e9 for a in adc_values]
-        self.iv_plot.update_plot(bias, current)
-        self.log(f"IV sweep done ({len(bias)} points)")
+        else:
+            dac_values = values[::2]
+            adc_values = [int(x) for x in values[1::2]
+                          if str(x).lstrip("-").isdigit()]
+            if len(dac_values) > 1 and len(adc_values) >= len(dac_values):
+                adc_values = adc_values[:len(dac_values)]
+                bias = [stm_control.STM_Status.dac_to_bias_volts(d)
+                        for d in dac_values]
+                current = [stm_control.STM_Status.adc_to_amp(a) * 1e9
+                           for a in adc_values]
+                self.iv_plot.update_plot(bias, current)
+                self.log(f"IV sweep done ({len(bias)} points)")
+        if self._iv_live:
+            self.after(400, self._run_iv_once)
+        else:
+            self._status_live = True
 
     def _save_iv_curve(self, prefix):
         if not self._require_connection():
@@ -852,21 +901,25 @@ class App(tk.Tk):
     def _start_scan(self, samples):
         if not self._require_connection():
             return
-        try:
-            x_start, x_end, x_res = self._parse_ints(self.scan_x.values())
-            y_start, y_end, y_res = self._parse_ints(self.scan_y.values())
-            samples = int(float(samples))
-        except ValueError:
-            self.log("scan: all scan parameters must be integers")
-            return
-        if x_res <= 0 or y_res <= 0 or samples <= 0:
-            self.log("scan: resolution and samples must be positive")
-            return
+        x_start, x_end, x_res = self._parse_ints(self.scan_x.values())
+        y_start, y_end, y_res = self._parse_ints(self.scan_y.values())
+        samples = int(float(samples))
+        raw = (x_start, x_end, x_res, y_start, y_end, y_res)
+        x_start = stm_control._clamp_dac(x_start)
+        x_end = stm_control._clamp_dac(x_end)
+        y_start = stm_control._clamp_dac(y_start)
+        y_end = stm_control._clamp_dac(y_end)
+        x_res = stm_control._clamp_res(x_res)
+        y_res = stm_control._clamp_res(y_res)
+        samples = max(samples, 1)
+        clamped = (x_start, x_end, x_res, y_start, y_end, y_res)
+        if clamped != raw:
+            self.log("scan range clamped to DAC 0-65535, resolution 1-2048")
 
         started = self.tasks.submit(
             "scan", self.stm.start_scan,
-            x_start, x_end, x_res, y_start, y_end, y_res, samples,
-            on_done=lambda _r: self.log("scan finished"),
+            x_start, x_end, x_res, y_start, y_end, y_res, samples, DATA_DIR,
+            on_done=self._on_scan_done,
             on_error=self._on_scan_error)
         if started:
             self.log(f"scan started: X[{x_start},{x_end}]/{x_res} "
@@ -874,9 +927,32 @@ class App(tk.Tk):
         else:
             self.log("scan already running")
 
+    def _on_scan_done(self, paths):
+        adc_path, dacz_path = paths if paths else (None, None)
+        if adc_path:
+            self.log(f"scan finished, saved {adc_path} , {dacz_path}")
+        else:
+            self.log("scan finished")
+
     def _on_scan_error(self, exc):
         self.stm.busy = False
         self.log(f"scan failed: {exc}")
+        self._dump_scan_txt()
+
+    def _dump_scan_txt(self):
+        paths = getattr(self.stm, "scan_save_paths", (None, None))
+        if paths[0] and os.path.isfile(paths[0]):
+            self.log(f"partial scan kept in {paths[0]} , {paths[1]}")
+            return
+        if self.stm.scan_adc is None:
+            return
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        adc_path = os.path.join(DATA_DIR, f"scan_adc_{stamp}.txt")
+        dacz_path = os.path.join(DATA_DIR, f"scan_dacz_{stamp}.txt")
+        ensure_parent_dir(adc_path)
+        np.savetxt(adc_path, self.stm.scan_adc)
+        np.savetxt(dacz_path, self.stm.scan_dacz)
+        self.log(f"partial scan saved {adc_path} , {dacz_path}")
 
     def _save_scan_image(self, prefix):
         if self.stm.scan_adc is None or self.stm.scan_dacz is None:
@@ -902,7 +978,9 @@ class App(tk.Tk):
                 status = self.stm.get_status(timeout=0.2)
                 if status is not None:
                     now = time.time()
-                    self._trace.append((now, status.adc, status.steps))
+                    adc_now = status.adc
+                    if -32768 <= adc_now <= 32767:
+                        self._trace.append((now, adc_now, status.steps))
                     cutoff = now - HISTORY_WINDOW_S
                     self._trace = [p for p in self._trace if p[0] >= cutoff]
                     self._render_status(status)
@@ -929,9 +1007,15 @@ class App(tk.Tk):
         t0 = self._trace[0][0]
         times = [p[0] - t0 for p in self._trace]
         current = [stm_control.STM_Status.adc_to_amp(p[1]) * 1e9 for p in self._trace]
+        adc = [p[1] for p in self._trace]
         steps = [p[2] for p in self._trace]
         self.current_plot.update_plot(times, current)
+        self.adc_plot.update_plot(times, adc)
         self.steps_plot.update_plot(times, steps)
+        x0, x1 = times[0], times[-1]
+        if x1 > x0:
+            self.current_plot.figure.get_axes()[0].set_xlim(x0, x1)
+            self.adc_plot.figure.get_axes()[0].set_xlim(x0, x1)
 
     def _poll_images(self):
         busy = self.stm.busy

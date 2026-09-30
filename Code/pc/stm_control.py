@@ -1,9 +1,39 @@
+import os
 import serial
+import time
+from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
-from dataclasses import dataclass
-from collections import deque
-import time
+
+DAC_MIN = 0
+DAC_MAX = 65535
+SCAN_RES_MAX = 2048
+SCAN_IDLE_TIMEOUT_S = 120
+
+
+def _clamp_dac(value):
+    return min(max(int(value), DAC_MIN), DAC_MAX)
+
+
+def _clamp_res(value):
+    return min(max(int(value), 1), SCAN_RES_MAX)
+
+
+def _parse_int_fields(parts):
+    values = []
+    for part in parts:
+        text = str(part).strip()
+        if text and text.lstrip("-").isdigit():
+            values.append(int(text))
+    return values
+
+
+def _append_row(path, row):
+    if not path:
+        return
+    with open(path, "a") as f:
+        f.write(" ".join(str(int(v)) for v in row) + "\n")
 
 
 @dataclass
@@ -80,8 +110,9 @@ class STM(object):
         self.scan_dacz = None
 
         self.scan_config = [0, 100, 10, 0, 100, 10]
-        self.scan_adc = np.ones([512, 512], dtype=np.float32)
-        self.scan_dacz = np.ones([512, 512], dtype=np.float32)
+        self.scan_adc = np.zeros([512, 512], dtype=np.float32)
+        self.scan_dacz = np.zeros([512, 512], dtype=np.float32)
+        self.scan_save_paths = (None, None)
         self.last_raw_status = ""
 
     def close(self):
@@ -187,58 +218,78 @@ class STM(object):
     def set_pid(self, Kp, Ki, Kd):
         self.send_cmd(f"PIDS {Kp} {Ki} {Kd}")
 
-    def start_scan(self, x_start, x_end, x_resolution, y_start, y_end, y_resolution, sample_number):
+    def start_scan(self, x_start, x_end, x_resolution, y_start, y_end, y_resolution, sample_number, save_dir=None):
+        x_start, x_end = _clamp_dac(x_start), _clamp_dac(x_end)
+        y_start, y_end = _clamp_dac(y_start), _clamp_dac(y_end)
+        x_resolution = _clamp_res(x_resolution)
+        y_resolution = _clamp_res(y_resolution)
+        sample_number = max(int(sample_number), 1)
+
         self.busy = True
         self.scan_config = [x_start, x_end,
                             x_resolution, y_start, y_end, y_resolution]
+        self.scan_adc = np.zeros([x_resolution, y_resolution], dtype=np.float32)
+        self.scan_dacz = np.zeros([x_resolution, y_resolution], dtype=np.float32)
+
+        adc_path = None
+        dacz_path = None
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            adc_path = os.path.join(save_dir, f"scan_adc_{stamp}.txt")
+            dacz_path = os.path.join(save_dir, f"scan_dacz_{stamp}.txt")
+            open(adc_path, "w").close()
+            open(dacz_path, "w").close()
+        self.scan_save_paths = (adc_path, dacz_path)
+
         self.send_cmd(
             f"SCST {x_start} {x_end} {x_resolution} {y_start} {y_end} {y_resolution} {sample_number}")
 
-        self.scan_adc = np.ones([x_resolution, y_resolution], dtype=np.float32)
-        self.scan_dacz = np.ones(
-            [x_resolution, y_resolution], dtype=np.float32)
-
-        current_line = ''
+        def _store_row(image, path, x_i, values):
+            if x_i < 0 or x_i >= image.shape[0]:
+                return
+            n = min(len(values), image.shape[1])
+            image[x_i, :n] = values[:n]
+            _append_row(path, image[x_i])
 
         def _process_full_line(full_line):
-            # print(full_line)
-            data = full_line.split(',')
-            data_type = data[0]
-            if data_type == "A":
-                x_i = int(data[1])
-                data_content = data[2:]
-                data_content = [int(x) for x in data_content]
-                self.scan_adc[x_i, :] = data_content
-            if data_type == "Z":
-                x_i = int(data[1])
-                data_content = data[2:]
-                data_content = [int(x) for x in data_content]
-                self.scan_dacz[x_i, :] = data_content
-            if data_type == "D":
+            data = full_line.strip().split(",")
+            if not data:
+                return False
+            kind = data[0]
+            if kind == "D":
                 return True
+            if len(data) < 2:
+                return False
+            index = _parse_int_fields(data[1:2])
+            if not index:
+                return False
+            values = _parse_int_fields(data[2:])
+            if kind == "A":
+                _store_row(self.scan_adc, adc_path, index[0], values)
+            elif kind == "Z":
+                _store_row(self.scan_dacz, dacz_path, index[0], values)
             return False
 
-        while (True):
-            read_number = self.stm_serial.inWaiting()
-            if (read_number == 0):
+        buf = ""
+        done = False
+        last_data = time.time()
+        idle_limit = max(SCAN_IDLE_TIMEOUT_S, y_resolution * sample_number * 0.05)
+        while not done:
+            waiting = self.stm_serial.inWaiting()
+            if waiting == 0:
+                if time.time() - last_data > idle_limit:
+                    break
+                time.sleep(0.01)
                 continue
-            read_str = self.stm_serial.read(read_number).decode()
-            if "\n" in read_str:
-                split_lines = read_str.split("\n")
-                for data_line in split_lines:
-                    if len(data_line) == 0:
-                        continue
-                    current_line += data_line
-                    if current_line[-1] == "\r":  # We have a full line
-                        _process_full_line(current_line)
-                        current_line = ''
-            else:
-                current_line += read_str
-            # We have a full line
-            if current_line and current_line[-1] == "\r":
-                _process_full_line(data_line)
-                current_line = ''
-            if "D" in read_str:
-                break
+            last_data = time.time()
+            buf += self.stm_serial.read(waiting).decode(errors="replace")
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                if _process_full_line(line):
+                    done = True
+                    break
+        if not done and buf.strip() == "D":
+            done = True
         self.busy = False
-        return
+        return adc_path, dacz_path
