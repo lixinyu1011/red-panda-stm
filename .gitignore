@@ -1,0 +1,17 @@
+.DS_Store
+.history/
+.vscode/
+.idea/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+Code/teensy/.pio/
+Code/pc/data/
+
+PCB/STMP_easyEDA/
+PCB/**/.DS_Store
+.history/
