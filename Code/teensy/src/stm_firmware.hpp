@@ -38,9 +38,6 @@ STM Firmware for Teensy 4.1
 const int MAX_DAC_OUT = (1 << (DAC_BITS - 1)) - 1; // DAC upper bound
 const int MIN_DAC_OUT = -(1 << (DAC_BITS - 1));    // DAC lower bound
 
-// ADC Settings
-LTC2326_16 ltc2326 = LTC2326_16(CS_ADC, CNV, BUSY);
-
 // initialize the stepper library
 // ULN2003 Motor Driver Pins
 #define IN1 33
@@ -159,14 +156,20 @@ public: // Access specifier
     // ADC
     int read_adc_raw()
     {
+        // Start a new conversion
+        ltc2326.convert();
+
+        // Wait for conversion to complete by checking BUSY pin
         int start_time = millis();
-        while (ltc2326.busy() && millis() - start_time <= 1)
+        while (ltc2326.busy() && millis() - start_time <= 10)
         {
-            continue;
+            delayMicroseconds(10);
         }
+
+        // Read the result
         int val = ltc2326.read();
         this->_add_adc_value(val);
-        ltc2326.convert();
+
         return val;
     }
     int read_adc()

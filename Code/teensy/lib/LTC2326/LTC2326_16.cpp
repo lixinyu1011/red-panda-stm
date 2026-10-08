@@ -34,7 +34,10 @@ LTC2326_16::LTC2326_16(byte cs, byte cnv, byte busy)
 
 void LTC2326_16::convert()
 {
-    digitalWrite(_cnv, HIGH);
+    digitalWrite(_cnv, LOW);   // Ensure CNV is low first
+    delayMicroseconds(1);      // t_CNVL min is 10ns, give it 1us
+    digitalWrite(_cnv, HIGH);  // Rising edge starts conversion
+    delayMicroseconds(2);      // t_CNVH min is 10ns, hold high for 2us
 }
 
 /**************************************************************************/
@@ -61,11 +64,21 @@ int16_t LTC2326_16::read()
 {
     int16_t val;
 
-    digitalWrite(_cnv, LOW); // Reset CNV for another conversion later on
+    // Wait for conversion to complete - CNV must be high during conversion
+    // Typical conversion time is 1.6us, max 3us
+    delayMicroseconds(3);
+
+    // Now pull CNV low to enable data output
+    digitalWrite(_cnv, LOW);
+    delayMicroseconds(1);    // t_CNVL min is 10ns
+
     SPI1.beginTransaction(_spi_settings);
-    digitalWrite(_cs, HIGH);
-    val = SPI1.transfer16(0x00);
-    digitalWrite(_cs, LOW);
+    digitalWrite(_cs, LOW);  // Select chip (RDL/CS active low enables SDO)
+    delayMicroseconds(1);    // t_CSLSDO min is 0ns, but give it time
+    val = SPI1.transfer16(0x0000);
+    digitalWrite(_cs, HIGH); // Deselect chip
+    SPI1.endTransaction();
+
     return val;
 }
 

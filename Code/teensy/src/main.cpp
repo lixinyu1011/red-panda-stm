@@ -46,8 +46,12 @@ void serialCommand(String command, STM &stm)
     // ADC READ
     if (command == "ADCR")
     {
-      int val = stm.read_adc();
-      Serial.println(val);
+      int raw_val = stm.read_adc_raw();
+      int avg_val = stm.read_adc();
+      Serial.print("Raw:");
+      Serial.print(raw_val);
+      Serial.print(" Avg:");
+      Serial.println(avg_val);
     }
     // Get status
     if (command == "GSTS")
@@ -140,15 +144,28 @@ void setup()
 {
   // initialize the serial port
   Serial.begin(115200);
+  delay(1000); // Wait for serial to be ready
+  Serial.println("STM Starting...");
+
   // initialize SPI:
   SPI.begin();
   // Set Up SPI1 for Teensy 4.1
   SPI1.setSCK(27);
-  SPI1.setCS(38);
   SPI1.setMISO(39);
   SPI1.begin();
+  // CS_ADC drives the LTC2326's RDL/SDI and has to stay a plain GPIO. SPI1.setCS()
+  // would re-mux it to the LPSPI hardware chip select, which transfer16() never
+  // asserts, leaving RDL high and SDO in high impedance.
+  pinMode(CS_ADC, OUTPUT);
+  digitalWrite(CS_ADC, HIGH);
+
+  Serial.println("SPI initialized");
+
   // Reset all;
   stm.reset();
+
+  Serial.println("STM reset complete");
+  Serial.println("Ready for commands");
   // Init
 }
 

@@ -55,7 +55,10 @@ private:
   byte _cs;
   byte _cnv;
   byte _busy;
-  const SPISettings _spi_settings = SPISettings(40000000, MSBFIRST, SPI_MODE2);
+  // SDO changes on SCK rising and is captured on falling, which is MODE2. t_DSDO is
+  // 7.5ns, so 40MHz left only ~5ns of margin; 10MHz still reads 16 bits in 1.6us.
+  // Using 10MHz for reliable operation
+  const SPISettings _spi_settings = SPISettings(10000000, MSBFIRST, SPI_MODE2);
   const float _ref_buffer_volts = 4.096f;
 };
 
